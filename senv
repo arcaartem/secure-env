@@ -1,0 +1,456 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# senv - Secure Environment File Manager
+# Manages encrypted .env files using SOPS+GPG
+
+VERSION="1.0.0"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/senv"
+CONFIG_FILE="$CONFIG_DIR/config.yaml"
+SECRETS_DIR="$CONFIG_DIR/secrets"
+
+# Global project override (set via -p flag)
+PROJECT_OVERRIDE=""
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+err() { echo -e "${RED}error:${NC} $*" >&2; }
+warn() { echo -e "${YELLOW}warning:${NC} $*" >&2; }
+info() { echo -e "${BLUE}info:${NC} $*"; }
+success() { echo -e "${GREEN}success:${NC} $*"; }
+
+# Get project name (override or current directory)
+get_project_name() {
+    if [[ -n "$PROJECT_OVERRIDE" ]]; then
+        echo "$PROJECT_OVERRIDE"
+    else
+        basename "$(pwd)"
+    fi
+}
+
+# Read config value
+get_config() {
+    local key="$1"
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local value
+        value=$(grep "^${key}:" "$CONFIG_FILE" 2>/dev/null | sed "s/^${key}:[[:space:]]*//")
+        # Expand ~ to HOME using bash parameter expansion (avoids sed delimiter issues)
+        echo "${value/#\~/$HOME}"
+    fi
+}
+
+# Check if initialized
+check_init() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        err "senv not initialized. Run 'senv init' first."
+        exit 1
+    fi
+}
+
+# Get encrypted file path for project/env
+get_enc_path() {
+    local project="$1"
+    local env="$2"
+    echo "$SECRETS_DIR/$project/${env}.env.enc"
+}
+
+# ============================================================================
+# Commands
+# ============================================================================
+
+cmd_init() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        warn "Already initialized. Config: $CONFIG_FILE"
+        read -rp "Reinitialize? [y/N] " confirm
+        [[ "$confirm" != [yY] ]] && exit 0
+    fi
+
+    # Get GPG key
+    echo "Available GPG keys:"
+    gpg --list-secret-keys --keyid-format LONG 2>/dev/null | grep -E "^sec|^uid" || {
+        err "No GPG keys found. Create one with: gpg --full-generate-key"
+        exit 1
+    }
+    echo
+    read -rp "Enter GPG key ID (long format, e.g., ABCD1234EFGH5678): " gpg_key
+
+    if [[ -z "$gpg_key" ]]; then
+        err "GPG key ID required"
+        exit 1
+    fi
+
+    # Validate GPG key exists
+    if ! gpg --list-secret-keys "$gpg_key" &>/dev/null; then
+        err "GPG key '$gpg_key' not found"
+        exit 1
+    fi
+
+    # Create config directory
+    mkdir -p "$CONFIG_DIR"
+
+    # Create config file
+    cat > "$CONFIG_FILE" <<EOF
+secrets_path: $SECRETS_DIR
+gpg_key: $gpg_key
+EOF
+
+    # Create secrets directory as git repo
+    mkdir -p "$SECRETS_DIR"
+    if [[ ! -d "$SECRETS_DIR/.git" ]]; then
+        git -C "$SECRETS_DIR" init -q
+    fi
+
+    # Create .sops.yaml
+    cat > "$SECRETS_DIR/.sops.yaml" <<EOF
+creation_rules:
+  - path_regex: .*\.env\.enc$
+    pgp: $gpg_key
+EOF
+
+    # Create .gitignore for secrets repo
+    cat > "$SECRETS_DIR/.gitignore" <<EOF
+# Never commit decrypted files
+*.env
+!*.env.enc
+EOF
+
+    success "Initialized senv"
+    info "Config: $CONFIG_FILE"
+    info "Secrets: $SECRETS_DIR"
+    info "GPG Key: $gpg_key"
+}
+
+cmd_use() {
+    check_init
+    local env="${1:-}"
+
+    if [[ -z "$env" ]]; then
+        err "Usage: senv use <environment>"
+        echo "Available: $(cmd_list 2>/dev/null | tr '\n' ' ')"
+        exit 1
+    fi
+
+    local project
+    project=$(get_project_name)
+    local enc_path
+    enc_path=$(get_enc_path "$project" "$env")
+
+    if [[ ! -f "$enc_path" ]]; then
+        err "Environment '$env' not found for project '$project'"
+        info "Create it with: senv edit $env"
+        exit 1
+    fi
+
+    # Check for unsaved changes
+    if [[ -f ".env" ]]; then
+        local current_env
+        current_env=$(head -1 .env 2>/dev/null | grep "^# senv:" | sed 's/^# senv: //' || echo "")
+        if [[ -n "$current_env" && "$current_env" != "$env" ]]; then
+            warn "Current .env is from '$current_env' environment"
+        fi
+    fi
+
+    # Decrypt to .env
+    local sops_config="$SECRETS_DIR/.sops.yaml"
+    info "Decrypting $env → .env"
+    {
+        echo "# senv: $env"
+        echo "# Decrypted from: $enc_path"
+        echo "# Do not commit this file!"
+        echo ""
+        sops --config "$sops_config" --input-type dotenv --output-type dotenv -d "$enc_path"
+    } > .env
+
+    success "Activated '$env' environment for '$project'"
+
+    # Check for .envrc
+    if [[ ! -f ".envrc" ]]; then
+        info "Tip: Create .envrc with 'dotenv' for auto-loading"
+    fi
+}
+
+cmd_edit() {
+    check_init
+    local env="${1:-}"
+
+    if [[ -z "$env" ]]; then
+        err "Usage: senv edit <environment>"
+        exit 1
+    fi
+
+    local project
+    project=$(get_project_name)
+    local enc_path
+    enc_path=$(get_enc_path "$project" "$env")
+    local project_dir="$SECRETS_DIR/$project"
+    local sops_config="$SECRETS_DIR/.sops.yaml"
+
+    # Create project directory if needed
+    mkdir -p "$project_dir"
+
+    # Create new file or edit existing
+    if [[ ! -f "$enc_path" ]]; then
+        info "Creating new environment: $env"
+        # Create minimal encrypted file for SOPS to edit
+        # Use -p flag with GPG key since stdin doesn't match .sops.yaml path regex
+        local gpg_key
+        gpg_key=$(get_config "gpg_key")
+        echo "# Add your environment variables below" | sops -e -p "$gpg_key" --input-type dotenv --output-type dotenv /dev/stdin > "$enc_path"
+    fi
+
+    # Open in editor via SOPS (specify input/output type since .env.enc isn't auto-detected)
+    sops --config "$sops_config" --input-type dotenv --output-type dotenv "$enc_path"
+    success "Saved $env environment"
+}
+
+cmd_save() {
+    check_init
+
+    if [[ ! -f ".env" ]]; then
+        err "No .env file in current directory"
+        exit 1
+    fi
+
+    # Get environment from header
+    local env
+    env=$(head -1 .env 2>/dev/null | grep "^# senv:" | sed 's/^# senv: //' || echo "")
+
+    if [[ -z "$env" ]]; then
+        err ".env was not created by senv (missing header)"
+        info "Use 'senv edit <env>' to create a new environment"
+        exit 1
+    fi
+
+    local project
+    project=$(get_project_name)
+    local enc_path
+    enc_path=$(get_enc_path "$project" "$env")
+
+    # Create backup
+    if [[ -f "$enc_path" ]]; then
+        cp "$enc_path" "${enc_path}.backup"
+    fi
+
+    # Strip senv header comments and encrypt
+    # Use -p flag with GPG key since stdin doesn't match .sops.yaml path regex
+    local gpg_key
+    gpg_key=$(get_config "gpg_key")
+    info "Encrypting .env → $env"
+    grep -v "^# senv:" .env | grep -v "^# Decrypted from:" | grep -v "^# Do not commit" | \
+        sops -e -p "$gpg_key" --input-type dotenv --output-type dotenv /dev/stdin > "$enc_path"
+
+    success "Saved to $enc_path"
+    info "Don't forget to commit changes in $SECRETS_DIR"
+}
+
+cmd_list() {
+    check_init
+    local project
+    project=$(get_project_name)
+    local project_dir="$SECRETS_DIR/$project"
+
+    if [[ ! -d "$project_dir" ]]; then
+        err "No environments for project '$project'"
+        info "Create one with: senv edit <environment>"
+        exit 1
+    fi
+
+    # List .env.enc files
+    for f in "$project_dir"/*.env.enc; do
+        [[ -f "$f" ]] || continue
+        basename "$f" .env.enc
+    done
+}
+
+cmd_diff() {
+    check_init
+    local env="${1:-}"
+
+    if [[ -z "$env" ]]; then
+        # Try to get from current .env header
+        env=$(head -1 .env 2>/dev/null | grep "^# senv:" | sed 's/^# senv: //' || echo "")
+        if [[ -z "$env" ]]; then
+            err "Usage: senv diff <environment>"
+            exit 1
+        fi
+    fi
+
+    if [[ ! -f ".env" ]]; then
+        err "No .env file in current directory"
+        exit 1
+    fi
+
+    local project
+    project=$(get_project_name)
+    local enc_path
+    enc_path=$(get_enc_path "$project" "$env")
+
+    if [[ ! -f "$enc_path" ]]; then
+        err "Environment '$env' not found"
+        exit 1
+    fi
+
+    # Diff current .env (stripped of headers) vs decrypted stored version
+    local sops_config="$SECRETS_DIR/.sops.yaml"
+    local current_clean
+    current_clean=$(grep -v "^# senv:" .env | grep -v "^# Decrypted from:" | grep -v "^# Do not commit")
+
+    local stored
+    stored=$(sops --config "$sops_config" --input-type dotenv --output-type dotenv -d "$enc_path")
+
+    diff -u --label "stored ($env)" --label "local (.env)" <(echo "$stored") <(echo "$current_clean") || true
+}
+
+cmd_status() {
+    check_init
+    local project
+    project=$(get_project_name)
+
+    echo "Project: $project"
+
+    if [[ -f ".env" ]]; then
+        local env
+        env=$(head -1 .env 2>/dev/null | grep "^# senv:" | sed 's/^# senv: //' || echo "unknown")
+        echo "Active: $env"
+    else
+        echo "Active: (none)"
+    fi
+
+    echo "Available:"
+    cmd_list 2>/dev/null | sed 's/^/  - /' || echo "  (none)"
+}
+
+cmd_delete() {
+    check_init
+    local env="${1:-}"
+
+    if [[ -z "$env" ]]; then
+        err "Usage: senv delete <environment>"
+        exit 1
+    fi
+
+    local project
+    project=$(get_project_name)
+    local enc_path
+    enc_path=$(get_enc_path "$project" "$env")
+
+    if [[ ! -f "$enc_path" ]]; then
+        err "Environment '$env' not found for project '$project'"
+        exit 1
+    fi
+
+    warn "This will permanently delete the '$env' environment for '$project'"
+    read -rp "Are you sure? [y/N] " confirm
+    [[ "$confirm" != [yY] ]] && exit 0
+
+    rm -f "$enc_path"
+    rm -f "${enc_path}.backup"
+    success "Deleted '$env' environment"
+
+    # Clean up empty project directory
+    local project_dir="$SECRETS_DIR/$project"
+    if [[ -d "$project_dir" ]] && [[ -z "$(ls -A "$project_dir")" ]]; then
+        rmdir "$project_dir"
+        info "Removed empty project directory"
+    fi
+}
+
+cmd_repo() {
+    check_init
+    echo "$SECRETS_DIR"
+    info "Run: cd \"\$(senv repo)\" to change directory"
+}
+
+cmd_help() {
+    cat <<EOF
+senv $VERSION - Secure Environment File Manager
+
+USAGE:
+    senv [-p <project>] <command> [args]
+
+OPTIONS:
+    -p, --project <name>  Use specified project instead of current directory name
+
+COMMANDS:
+    init            Initialize senv (create config and secrets repo)
+    use <env>       Decrypt environment and write .env
+    edit <env>      Edit encrypted environment file
+    save            Encrypt current .env back to secrets repo
+    list            List available environments for current project
+    diff [env]      Show diff between local .env and stored version
+    delete <env>    Delete an environment permanently
+    status          Show current project status
+    repo            Print secrets repo path (use: cd "\$(senv repo)")
+    help            Show this help message
+
+EXAMPLES:
+    senv init                 # First-time setup
+    senv edit local           # Create/edit local environment
+    senv use local            # Activate local environment
+    senv save                 # Save changes back
+    senv use staging          # Switch to staging
+
+CONFIGURATION:
+    Config: $CONFIG_FILE
+    Secrets: $SECRETS_DIR
+EOF
+}
+
+# ============================================================================
+# Main
+# ============================================================================
+
+main() {
+    # Parse global options
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -p|--project)
+                PROJECT_OVERRIDE="$2"
+                shift 2
+                ;;
+            -*)
+                # Check if it's a help/version flag
+                case "$1" in
+                    -h|--help) cmd_help; exit 0 ;;
+                    -v|--version) echo "senv $VERSION"; exit 0 ;;
+                    *)
+                        err "Unknown option: $1"
+                        exit 1
+                        ;;
+                esac
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    local cmd="${1:-help}"
+    shift || true
+
+    case "$cmd" in
+        init)   cmd_init "$@" ;;
+        use)    cmd_use "$@" ;;
+        edit)   cmd_edit "$@" ;;
+        save)   cmd_save "$@" ;;
+        list)   cmd_list "$@" ;;
+        diff)   cmd_diff "$@" ;;
+        delete|rm) cmd_delete "$@" ;;
+        status) cmd_status "$@" ;;
+        repo|cd) cmd_repo "$@" ;;
+        help|--help|-h) cmd_help ;;
+        version|--version|-v) echo "senv $VERSION" ;;
+        *)
+            err "Unknown command: $cmd"
+            cmd_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
