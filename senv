@@ -9,8 +9,9 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/senv"
 CONFIG_FILE="$CONFIG_DIR/config.yaml"
 SECRETS_DIR="$CONFIG_DIR/secrets"
 
-# Global project override (set via -p flag)
+# Global overrides (set via flags)
 PROJECT_OVERRIDE=""
+SECRETS_PATH_OVERRIDE=""
 
 # Colors
 RED='\033[0;31m'
@@ -24,12 +25,33 @@ warn() { echo -e "${YELLOW}warning:${NC} $*" >&2; }
 info() { echo -e "${BLUE}info:${NC} $*"; }
 success() { echo -e "${GREEN}success:${NC} $*"; }
 
-# Get project name (override or current directory)
+# Get project name (flag > env var > current directory)
 get_project_name() {
     if [[ -n "$PROJECT_OVERRIDE" ]]; then
         echo "$PROJECT_OVERRIDE"
+    elif [[ -n "${SENV_PROJECT:-}" ]]; then
+        echo "$SENV_PROJECT"
     else
         basename "$(pwd)"
+    fi
+}
+
+# Get secrets path (flag > env var > config)
+get_secrets_path() {
+    if [[ -n "$SECRETS_PATH_OVERRIDE" ]]; then
+        echo "$SECRETS_PATH_OVERRIDE"
+    elif [[ -n "${SENV_SECRETS_PATH:-}" ]]; then
+        echo "$SENV_SECRETS_PATH"
+    elif [[ -f "$CONFIG_FILE" ]]; then
+        local value
+        value=$(get_config "secrets_path")
+        if [[ -n "$value" ]]; then
+            echo "$value"
+        else
+            echo "$SECRETS_DIR"
+        fi
+    else
+        echo "$SECRETS_DIR"
     fi
 }
 
@@ -56,7 +78,9 @@ check_init() {
 get_enc_path() {
     local project="$1"
     local env="$2"
-    echo "$SECRETS_DIR/$project/${env}.env.enc"
+    local secrets_path
+    secrets_path=$(get_secrets_path)
+    echo "$secrets_path/$project/${env}.env.enc"
 }
 
 # ============================================================================
@@ -156,7 +180,9 @@ cmd_use() {
     fi
 
     # Decrypt to .env
-    local sops_config="$SECRETS_DIR/.sops.yaml"
+    local secrets_path
+    secrets_path=$(get_secrets_path)
+    local sops_config="$secrets_path/.sops.yaml"
     info "Decrypting $env → .env"
     {
         echo "# senv: $env"
@@ -185,10 +211,12 @@ cmd_edit() {
 
     local project
     project=$(get_project_name)
+    local secrets_path
+    secrets_path=$(get_secrets_path)
     local enc_path
     enc_path=$(get_enc_path "$project" "$env")
-    local project_dir="$SECRETS_DIR/$project"
-    local sops_config="$SECRETS_DIR/.sops.yaml"
+    local project_dir="$secrets_path/$project"
+    local sops_config="$secrets_path/.sops.yaml"
 
     # Create project directory if needed
     mkdir -p "$project_dir"
@@ -244,15 +272,19 @@ cmd_save() {
     grep -v "^# senv:" .env | grep -v "^# Decrypted from:" | grep -v "^# Do not commit" | \
         sops -e -p "$gpg_key" --input-type dotenv --output-type dotenv /dev/stdin > "$enc_path"
 
+    local secrets_path
+    secrets_path=$(get_secrets_path)
     success "Saved to $enc_path"
-    info "Don't forget to commit changes in $SECRETS_DIR"
+    info "Don't forget to commit changes in $secrets_path"
 }
 
 cmd_list() {
     check_init
     local project
     project=$(get_project_name)
-    local project_dir="$SECRETS_DIR/$project"
+    local secrets_path
+    secrets_path=$(get_secrets_path)
+    local project_dir="$secrets_path/$project"
 
     if [[ ! -d "$project_dir" ]]; then
         err "No environments for project '$project'"
@@ -296,7 +328,9 @@ cmd_diff() {
     fi
 
     # Diff current .env (stripped of headers) vs decrypted stored version
-    local sops_config="$SECRETS_DIR/.sops.yaml"
+    local secrets_path
+    secrets_path=$(get_secrets_path)
+    local sops_config="$secrets_path/.sops.yaml"
     local current_clean
     current_clean=$(grep -v "^# senv:" .env | grep -v "^# Decrypted from:" | grep -v "^# Do not commit")
 
@@ -353,28 +387,231 @@ cmd_delete() {
     success "Deleted '$env' environment"
 
     # Clean up empty project directory
-    local project_dir="$SECRETS_DIR/$project"
+    local secrets_path
+    secrets_path=$(get_secrets_path)
+    local project_dir="$secrets_path/$project"
     if [[ -d "$project_dir" ]] && [[ -z "$(ls -A "$project_dir")" ]]; then
         rmdir "$project_dir"
         info "Removed empty project directory"
     fi
 }
 
+cmd_export() {
+    check_init
+    local output_dir="."
+    local force=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --output-dir)
+                output_dir="$2"
+                shift 2
+                ;;
+            --force)
+                force=true
+                shift
+                ;;
+            *)
+                err "Unknown option: $1"
+                exit 1
+                ;;
+        esac
+    done
+
+    local project
+    project=$(get_project_name)
+    local secrets_path
+    secrets_path=$(get_secrets_path)
+    local project_dir="$secrets_path/$project"
+    local sops_config="$secrets_path/.sops.yaml"
+
+    # Check project has environments
+    if [[ ! -d "$project_dir" ]]; then
+        warn "No environments for project '$project'"
+        exit 0
+    fi
+
+    # Collect environments
+    local envs=()
+    for f in "$project_dir"/*.env.enc; do
+        [[ -f "$f" ]] || continue
+        envs+=("$(basename "$f" .env.enc)")
+    done
+
+    if [[ ${#envs[@]} -eq 0 ]]; then
+        warn "No environments found for project '$project'"
+        exit 0
+    fi
+
+    # Ensure output directory exists
+    if [[ ! -d "$output_dir" ]]; then
+        err "Output directory does not exist: $output_dir"
+        exit 1
+    fi
+
+    # Pre-check: verify no conflicts (unless --force)
+    if [[ "$force" != true ]]; then
+        local conflicts=()
+        for env in "${envs[@]}"; do
+            local target="$output_dir/.env.$env"
+            if [[ -f "$target" ]]; then
+                conflicts+=("$target")
+            fi
+        done
+
+        if [[ ${#conflicts[@]} -gt 0 ]]; then
+            err "Target files already exist:"
+            for c in "${conflicts[@]}"; do
+                echo "  - $c" >&2
+            done
+            info "Use --force to overwrite"
+            exit 1
+        fi
+    fi
+
+    # Export all environments
+    info "Exporting ${#envs[@]} environment(s) for '$project'"
+    for env in "${envs[@]}"; do
+        local enc_path
+        enc_path=$(get_enc_path "$project" "$env")
+        local target="$output_dir/.env.$env"
+
+        sops --config "$sops_config" --input-type dotenv --output-type dotenv -d "$enc_path" > "$target"
+        success "Exported: $target"
+    done
+
+    success "Exported ${#envs[@]} environment(s) to $output_dir"
+}
+
+cmd_import() {
+    check_init
+    local force=false
+    local keep=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force)
+                force=true
+                shift
+                ;;
+            --keep)
+                keep=true
+                shift
+                ;;
+            *)
+                err "Unknown option: $1"
+                exit 1
+                ;;
+        esac
+    done
+
+    local project
+    project=$(get_project_name)
+    local secrets_path
+    secrets_path=$(get_secrets_path)
+    local project_dir="$secrets_path/$project"
+
+    # Discover .env.<suffix> files (single suffix only)
+    local files=()
+    local envs=()
+    for f in .env.*; do
+        [[ -f "$f" ]] || continue
+        # Skip .env.enc, .env.backup, and multi-suffix files
+        local basename="${f#.env.}"
+        # Skip if basename contains a dot (multi-suffix)
+        [[ "$basename" == *"."* ]] && continue
+        # Skip known extensions
+        [[ "$basename" == "enc" || "$basename" == "backup" ]] && continue
+        files+=("$f")
+        envs+=("$basename")
+    done
+
+    if [[ ${#files[@]} -eq 0 ]]; then
+        warn "No .env.<environment> files found to import"
+        exit 0
+    fi
+
+    # Pre-check: verify no conflicts in repo (unless --force)
+    if [[ "$force" != true ]]; then
+        local conflicts=()
+        for env in "${envs[@]}"; do
+            local enc_path
+            enc_path=$(get_enc_path "$project" "$env")
+            if [[ -f "$enc_path" ]]; then
+                conflicts+=("$env")
+            fi
+        done
+
+        if [[ ${#conflicts[@]} -gt 0 ]]; then
+            err "Environments already exist in secrets repo:"
+            for c in "${conflicts[@]}"; do
+                echo "  - $c" >&2
+            done
+            info "Use --force to overwrite"
+            exit 1
+        fi
+    fi
+
+    # Get GPG key for encryption
+    local gpg_key
+    gpg_key=$(get_config "gpg_key")
+
+    # Create project directory if needed
+    mkdir -p "$project_dir"
+
+    # Import all files
+    info "Importing ${#files[@]} environment(s) for '$project'"
+    for i in "${!files[@]}"; do
+        local file="${files[$i]}"
+        local env="${envs[$i]}"
+        local enc_path
+        enc_path=$(get_enc_path "$project" "$env")
+
+        # Encrypt and save
+        sops -e -p "$gpg_key" --input-type dotenv --output-type dotenv "$file" > "$enc_path"
+        success "Imported: $file → $env"
+
+        # Delete source file unless --keep
+        if [[ "$keep" != true ]]; then
+            rm -f "$file"
+        fi
+    done
+
+    success "Imported ${#files[@]} environment(s)"
+    if [[ "$keep" != true ]]; then
+        info "Source files deleted"
+    else
+        info "Source files preserved (--keep)"
+    fi
+    info "Don't forget to commit changes in $secrets_path"
+}
+
 cmd_repo() {
     check_init
-    echo "$SECRETS_DIR"
+    local secrets_path
+    secrets_path=$(get_secrets_path)
+    echo "$secrets_path"
     info "Run: cd \"\$(senv repo)\" to change directory"
 }
 
 cmd_help() {
+    local secrets_path
+    secrets_path=$(get_secrets_path 2>/dev/null || echo "$SECRETS_DIR")
     cat <<EOF
 senv $VERSION - Secure Environment File Manager
 
 USAGE:
-    senv [-p <project>] <command> [args]
+    senv [-p <project>] [-s <path>] <command> [args]
 
 OPTIONS:
-    -p, --project <name>  Use specified project instead of current directory name
+    -p, --project <name>       Use specified project instead of current directory name
+    -s, --secrets-path <path>  Use specified secrets repo path
+
+ENVIRONMENT VARIABLES:
+    SENV_PROJECT       Override project name (lower priority than -p flag)
+    SENV_SECRETS_PATH  Override secrets repo path (lower priority than -s flag)
 
 COMMANDS:
     init            Initialize senv (create config and secrets repo)
@@ -386,7 +623,17 @@ COMMANDS:
     delete <env>    Delete an environment permanently
     status          Show current project status
     repo            Print secrets repo path (use: cd "\$(senv repo)")
+    export          Export all environments as .env.<env> files
+    import          Import all .env.<env> files into secrets repo
     help            Show this help message
+
+EXPORT OPTIONS:
+    --output-dir <path>  Export to specified directory (default: current)
+    --force              Overwrite existing files
+
+IMPORT OPTIONS:
+    --force              Overwrite existing environments in repo
+    --keep               Keep source .env files after import (default: delete)
 
 EXAMPLES:
     senv init                 # First-time setup
@@ -394,10 +641,14 @@ EXAMPLES:
     senv use local            # Activate local environment
     senv save                 # Save changes back
     senv use staging          # Switch to staging
+    senv export               # Export all envs as .env.* files
+    senv export --output-dir /tmp  # Export to specific directory
+    senv import               # Import all .env.* files
+    senv import --keep        # Import but keep source files
 
 CONFIGURATION:
     Config: $CONFIG_FILE
-    Secrets: $SECRETS_DIR
+    Secrets: $secrets_path
 EOF
 }
 
@@ -411,6 +662,10 @@ main() {
         case "$1" in
             -p|--project)
                 PROJECT_OVERRIDE="$2"
+                shift 2
+                ;;
+            -s|--secrets-path)
+                SECRETS_PATH_OVERRIDE="$2"
                 shift 2
                 ;;
             -*)
@@ -443,6 +698,8 @@ main() {
         delete|rm) cmd_delete "$@" ;;
         status) cmd_status "$@" ;;
         repo|cd) cmd_repo "$@" ;;
+        export) cmd_export "$@" ;;
+        import) cmd_import "$@" ;;
         help|--help|-h) cmd_help ;;
         version|--version|-v) echo "senv $VERSION" ;;
         *)
