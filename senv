@@ -2,12 +2,10 @@
 set -euo pipefail
 
 # senv - Secure Environment File Manager
-# Manages encrypted .env files using SOPS+GPG
+# Manages encrypted .env files using SOPS (backend-agnostic)
 
-VERSION="1.0.0"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/senv"
-CONFIG_FILE="$CONFIG_DIR/config.yaml"
-SECRETS_DIR="$CONFIG_DIR/secrets"
+VERSION="2.0.0"
+DEFAULT_SECRETS_DIR="$HOME/.local/share/senv"
 
 # Global overrides (set via flags)
 PROJECT_OVERRIDE=""
@@ -26,7 +24,7 @@ info() { echo -e "${BLUE}info:${NC} $*"; }
 success() { echo -e "${GREEN}success:${NC} $*"; }
 
 # Check for required dependencies
-# Usage: check_deps gpg sops git
+# Usage: check_deps sops git
 check_deps() {
     local missing=()
     for cmd in "$@"; do
@@ -50,6 +48,9 @@ check_deps() {
                 git)
                     echo "  git:  brew install git (macOS) or apt install git (Ubuntu)" >&2
                     ;;
+                age)
+                    echo "  age:  brew install age (macOS) or see https://github.com/FiloSottile/age" >&2
+                    ;;
                 *)
                     echo "  $cmd: please install $cmd" >&2
                     ;;
@@ -70,39 +71,22 @@ get_project_name() {
     fi
 }
 
-# Get secrets path (flag > env var > config)
+# Get secrets path (flag > env var > default)
 get_secrets_path() {
     if [[ -n "$SECRETS_PATH_OVERRIDE" ]]; then
         echo "$SECRETS_PATH_OVERRIDE"
     elif [[ -n "${SENV_SECRETS_PATH:-}" ]]; then
         echo "$SENV_SECRETS_PATH"
-    elif [[ -f "$CONFIG_FILE" ]]; then
-        local value
-        value=$(get_config "secrets_path")
-        if [[ -n "$value" ]]; then
-            echo "$value"
-        else
-            echo "$SECRETS_DIR"
-        fi
     else
-        echo "$SECRETS_DIR"
+        echo "$DEFAULT_SECRETS_DIR"
     fi
 }
 
-# Read config value
-get_config() {
-    local key="$1"
-    if [[ -f "$CONFIG_FILE" ]]; then
-        local value
-        value=$(grep "^${key}:" "$CONFIG_FILE" 2>/dev/null | sed "s/^${key}:[[:space:]]*//")
-        # Expand ~ to HOME using bash parameter expansion (avoids sed delimiter issues)
-        echo "${value/#\~/$HOME}"
-    fi
-}
-
-# Check if initialized
+# Check if initialized (has .sops.yaml)
 check_init() {
-    if [[ ! -f "$CONFIG_FILE" ]]; then
+    local secrets_path
+    secrets_path=$(get_secrets_path)
+    if [[ ! -f "$secrets_path/.sops.yaml" ]]; then
         err "senv not initialized. Run 'senv init' first."
         exit 1
     fi
@@ -122,22 +106,128 @@ get_enc_path() {
 # ============================================================================
 
 cmd_init() {
-    check_deps gpg sops git
+    check_deps sops git
 
-    if [[ -f "$CONFIG_FILE" ]]; then
-        warn "Already initialized. Config: $CONFIG_FILE"
-        read -rp "Reinitialize? [y/N] " confirm
-        [[ "$confirm" != [yY] ]] && exit 0
+    local secrets_path
+    secrets_path=$(get_secrets_path)
+
+    # Check for existing .sops.yaml
+    if [[ -f "$secrets_path/.sops.yaml" ]]; then
+        success "Using existing .sops.yaml at $secrets_path"
+
+        # Ensure git repo and .gitignore exist
+        mkdir -p "$secrets_path"
+        if [[ ! -d "$secrets_path/.git" ]]; then
+            git -C "$secrets_path" init -q
+            info "Initialized git repository"
+        fi
+
+        if [[ ! -f "$secrets_path/.gitignore" ]]; then
+            cat > "$secrets_path/.gitignore" <<EOF
+# Never commit decrypted files
+*.env
+!*.env.enc
+EOF
+            info "Created .gitignore"
+        fi
+
+        success "Initialized senv"
+        info "Secrets: $secrets_path"
+        return 0
     fi
 
-    # Get GPG key
+    # Create secrets directory
+    mkdir -p "$secrets_path"
+
+    # Prompt for backend
+    echo "Select encryption backend:"
+    echo "  1) age  - Modern, simple encryption (recommended)"
+    echo "  2) pgp  - GPG/PGP encryption"
+    echo ""
+    read -rp "Backend [age/pgp]: " backend
+
+    case "$backend" in
+        age|1)
+            setup_age_backend "$secrets_path"
+            ;;
+        pgp|2)
+            setup_pgp_backend "$secrets_path"
+            ;;
+        *)
+            err "Invalid backend. Choose 'age' or 'pgp'"
+            exit 1
+            ;;
+    esac
+
+    # Initialize git repo
+    if [[ ! -d "$secrets_path/.git" ]]; then
+        git -C "$secrets_path" init -q
+    fi
+
+    # Create .gitignore
+    cat > "$secrets_path/.gitignore" <<EOF
+# Never commit decrypted files
+*.env
+!*.env.enc
+EOF
+
+    success "Initialized senv"
+    info "Secrets: $secrets_path"
+}
+
+setup_age_backend() {
+    local secrets_path="$1"
+    check_deps age
+
+    local age_key_file="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
+    local age_recipient=""
+
+    # Check for existing key
+    if [[ -f "$age_key_file" ]]; then
+        age_recipient=$(grep "public key:" "$age_key_file" | head -1 | sed 's/.*: //')
+        if [[ -n "$age_recipient" ]]; then
+            info "Found existing age key: $age_recipient"
+        fi
+    fi
+
+    # If no key found, offer to generate
+    if [[ -z "$age_recipient" ]]; then
+        echo "No age key found at $age_key_file"
+        read -rp "Generate a new age key? [Y/n]: " generate
+        if [[ "$generate" != [nN] ]]; then
+            mkdir -p "$(dirname "$age_key_file")"
+            age-keygen -o "$age_key_file" 2>&1
+            age_recipient=$(grep "public key:" "$age_key_file" | sed 's/.*: //')
+            success "Generated age key: $age_recipient"
+            info "Private key saved to: $age_key_file"
+        else
+            err "Age key required. Generate one with: age-keygen -o $age_key_file"
+            exit 1
+        fi
+    fi
+
+    # Create .sops.yaml
+    cat > "$secrets_path/.sops.yaml" <<EOF
+creation_rules:
+  - path_regex: .*\.env\.enc$
+    age: $age_recipient
+EOF
+
+    success "Configured age backend"
+}
+
+setup_pgp_backend() {
+    local secrets_path="$1"
+    check_deps gpg
+
+    # List available GPG keys
     echo "Available GPG keys:"
     gpg --list-secret-keys --keyid-format LONG 2>/dev/null | grep -E "^sec|^uid" || {
         err "No GPG keys found. Create one with: gpg --full-generate-key"
         exit 1
     }
-    echo
-    read -rp "Enter GPG key ID (long format, e.g., ABCD1234EFGH5678): " gpg_key
+    echo ""
+    read -rp "Enter GPG key ID (long format): " gpg_key
 
     if [[ -z "$gpg_key" ]]; then
         err "GPG key ID required"
@@ -150,43 +240,19 @@ cmd_init() {
         exit 1
     fi
 
-    # Create config directory
-    mkdir -p "$CONFIG_DIR"
-
-    # Create config file
-    cat > "$CONFIG_FILE" <<EOF
-secrets_path: $SECRETS_DIR
-gpg_key: $gpg_key
-EOF
-
-    # Create secrets directory as git repo
-    mkdir -p "$SECRETS_DIR"
-    if [[ ! -d "$SECRETS_DIR/.git" ]]; then
-        git -C "$SECRETS_DIR" init -q
-    fi
-
     # Create .sops.yaml
-    cat > "$SECRETS_DIR/.sops.yaml" <<EOF
+    cat > "$secrets_path/.sops.yaml" <<EOF
 creation_rules:
   - path_regex: .*\.env\.enc$
     pgp: $gpg_key
 EOF
 
-    # Create .gitignore for secrets repo
-    cat > "$SECRETS_DIR/.gitignore" <<EOF
-# Never commit decrypted files
-*.env
-!*.env.enc
-EOF
-
-    success "Initialized senv"
-    info "Config: $CONFIG_FILE"
-    info "Secrets: $SECRETS_DIR"
+    success "Configured PGP backend"
     info "GPG Key: $gpg_key"
 }
 
 cmd_use() {
-    check_deps gpg sops
+    check_deps sops
     check_init
     local env="${1:-}"
 
@@ -238,7 +304,7 @@ cmd_use() {
 }
 
 cmd_edit() {
-    check_deps gpg sops
+    check_deps sops
     check_init
     local env="${1:-}"
 
@@ -262,20 +328,19 @@ cmd_edit() {
     # Create new file or edit existing
     if [[ ! -f "$enc_path" ]]; then
         info "Creating new environment: $env"
-        # Create minimal encrypted file for SOPS to edit
-        # Use -p flag with GPG key since stdin doesn't match .sops.yaml path regex
-        local gpg_key
-        gpg_key=$(get_config "gpg_key")
-        echo "# Add your environment variables below" | sops -e -p "$gpg_key" --input-type dotenv --output-type dotenv /dev/stdin > "$enc_path"
+        # Create minimal encrypted file using .sops.yaml rules
+        # Use --filename-override so path_regex in .sops.yaml matches the output file
+        echo "# Add your environment variables below" | \
+            sops --config "$sops_config" --filename-override "$enc_path" -e --input-type dotenv --output-type dotenv /dev/stdin > "$enc_path"
     fi
 
-    # Open in editor via SOPS (specify input/output type since .env.enc isn't auto-detected)
+    # Open in editor via SOPS
     sops --config "$sops_config" --input-type dotenv --output-type dotenv "$enc_path"
     success "Saved $env environment"
 }
 
 cmd_save() {
-    check_deps gpg sops
+    check_deps sops
     check_init
 
     if [[ ! -f ".env" ]]; then
@@ -295,24 +360,23 @@ cmd_save() {
 
     local project
     project=$(get_project_name)
+    local secrets_path
+    secrets_path=$(get_secrets_path)
     local enc_path
     enc_path=$(get_enc_path "$project" "$env")
+    local sops_config="$secrets_path/.sops.yaml"
 
     # Create backup
     if [[ -f "$enc_path" ]]; then
         cp "$enc_path" "${enc_path}.backup"
     fi
 
-    # Strip senv header comments and encrypt
-    # Use -p flag with GPG key since stdin doesn't match .sops.yaml path regex
-    local gpg_key
-    gpg_key=$(get_config "gpg_key")
+    # Strip senv header comments and encrypt using .sops.yaml rules
+    # Use --filename-override so path_regex in .sops.yaml matches the output file
     info "Encrypting .env → $env"
     grep -v "^# senv:" .env | grep -v "^# Decrypted from:" | grep -v "^# Do not commit" | \
-        sops -e -p "$gpg_key" --input-type dotenv --output-type dotenv /dev/stdin > "$enc_path"
+        sops --config "$sops_config" --filename-override "$enc_path" -e --input-type dotenv --output-type dotenv /dev/stdin > "$enc_path"
 
-    local secrets_path
-    secrets_path=$(get_secrets_path)
     success "Saved to $enc_path"
     info "Don't forget to commit changes in $secrets_path"
 }
@@ -339,7 +403,7 @@ cmd_list() {
 }
 
 cmd_diff() {
-    check_deps gpg sops
+    check_deps sops
     check_init
     local env="${1:-}"
 
@@ -437,7 +501,7 @@ cmd_delete() {
 }
 
 cmd_export() {
-    check_deps gpg sops
+    check_deps sops
     check_init
     local output_dir="."
     local force=false
@@ -526,7 +590,7 @@ cmd_export() {
 }
 
 cmd_import() {
-    check_deps gpg sops
+    check_deps sops
     check_init
     local force=false
     local keep=false
@@ -554,6 +618,7 @@ cmd_import() {
     local secrets_path
     secrets_path=$(get_secrets_path)
     local project_dir="$secrets_path/$project"
+    local sops_config="$secrets_path/.sops.yaml"
 
     # Discover .env.<suffix> files (single suffix only)
     local files=()
@@ -596,10 +661,6 @@ cmd_import() {
         fi
     fi
 
-    # Get GPG key for encryption
-    local gpg_key
-    gpg_key=$(get_config "gpg_key")
-
     # Create project directory if needed
     mkdir -p "$project_dir"
 
@@ -611,8 +672,9 @@ cmd_import() {
         local enc_path
         enc_path=$(get_enc_path "$project" "$env")
 
-        # Encrypt and save
-        sops -e -p "$gpg_key" --input-type dotenv --output-type dotenv "$file" > "$enc_path"
+        # Encrypt using .sops.yaml rules
+        # Use --filename-override so path_regex in .sops.yaml matches the output file
+        sops --config "$sops_config" --filename-override "$enc_path" -e --input-type dotenv --output-type dotenv "$file" > "$enc_path"
         success "Imported: $file → $env"
 
         # Delete source file unless --keep
@@ -640,7 +702,7 @@ cmd_repo() {
 
 cmd_help() {
     local secrets_path
-    secrets_path=$(get_secrets_path 2>/dev/null || echo "$SECRETS_DIR")
+    secrets_path=$(get_secrets_path)
     cat <<EOF
 senv $VERSION - Secure Environment File Manager
 
@@ -654,9 +716,10 @@ OPTIONS:
 ENVIRONMENT VARIABLES:
     SENV_PROJECT       Override project name (lower priority than -p flag)
     SENV_SECRETS_PATH  Override secrets repo path (lower priority than -s flag)
+                       Default: ~/.local/share/senv
 
 COMMANDS:
-    init            Initialize senv (create config and secrets repo)
+    init            Initialize senv (interactive backend selection)
     use <env>       Decrypt environment and write .env
     edit <env>      Edit encrypted environment file
     save            Encrypt current .env back to secrets repo
@@ -677,20 +740,22 @@ IMPORT OPTIONS:
     --force              Overwrite existing environments in repo
     --keep               Keep source .env files after import (default: delete)
 
+SUPPORTED BACKENDS:
+    age             Modern encryption (recommended) - https://github.com/FiloSottile/age
+    pgp             GPG/PGP encryption
+
 EXAMPLES:
-    senv init                 # First-time setup
+    senv init                 # First-time setup (choose backend)
     senv edit local           # Create/edit local environment
     senv use local            # Activate local environment
     senv save                 # Save changes back
     senv use staging          # Switch to staging
     senv export               # Export all envs as .env.* files
-    senv export --output-dir /tmp  # Export to specific directory
     senv import               # Import all .env.* files
-    senv import --keep        # Import but keep source files
 
 CONFIGURATION:
-    Config: $CONFIG_FILE
     Secrets: $secrets_path
+    SOPS config: $secrets_path/.sops.yaml
 EOF
 }
 

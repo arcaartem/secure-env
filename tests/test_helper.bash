@@ -9,11 +9,8 @@ setup_test_env() {
     # Create temporary directories
     export TEST_HOME=$(mktemp -d)
     export TEST_PROJECT_DIR=$(mktemp -d)
-    export TEST_CONFIG_DIR="$TEST_HOME/.config/senv"
-    export TEST_SECRETS_DIR="$TEST_CONFIG_DIR/secrets"
-
-    # Override XDG_CONFIG_HOME to use test directory
-    export XDG_CONFIG_HOME="$TEST_HOME/.config"
+    # New default location: ~/.local/share/senv
+    export TEST_SECRETS_DIR="$TEST_HOME/.local/share/senv"
 
     # Clear any environment overrides
     unset SENV_PROJECT
@@ -62,15 +59,12 @@ teardown_mock_gpg() {
 }
 
 # Initialize senv with test GPG key (non-interactive)
+# No config.yaml needed - just .sops.yaml in secrets dir
 init_senv_for_test() {
-    mkdir -p "$TEST_CONFIG_DIR"
     mkdir -p "$TEST_SECRETS_DIR"
 
-    # Create config file
-    cat > "$TEST_CONFIG_DIR/config.yaml" <<EOF
-secrets_path: $TEST_SECRETS_DIR
-gpg_key: $TEST_GPG_KEY
-EOF
+    # Set SENV_SECRETS_PATH to point to test secrets directory
+    export SENV_SECRETS_PATH="$TEST_SECRETS_DIR"
 
     # Initialize secrets repo
     git -C "$TEST_SECRETS_DIR" init -q
@@ -90,16 +84,35 @@ EOF
 }
 
 # Create a test environment file in the secrets repo
+# Uses TEST_SECRETS_DIR by default, or TEST_DEFAULT_SECRETS if set
 create_test_env() {
     local project="$1"
     local env="$2"
     local content="${3:-TEST_VAR=test_value}"
 
-    local project_dir="$TEST_SECRETS_DIR/$project"
+    # Use TEST_DEFAULT_SECRETS if set, otherwise TEST_SECRETS_DIR
+    local secrets_dir="${TEST_DEFAULT_SECRETS:-$TEST_SECRETS_DIR}"
+    local project_dir="$secrets_dir/$project"
+    local output_file="$project_dir/${env}.env.enc"
     mkdir -p "$project_dir"
 
-    # Encrypt the content
-    echo "$content" | sops -e -p "$TEST_GPG_KEY" --input-type dotenv --output-type dotenv /dev/stdin > "$project_dir/${env}.env.enc"
+    # Encrypt the content using .sops.yaml
+    # Use --filename-override so path_regex in .sops.yaml matches the output file
+    echo "$content" | sops --config "$secrets_dir/.sops.yaml" --filename-override "$output_file" -e --input-type dotenv --output-type dotenv /dev/stdin > "$output_file"
+}
+
+# Create encrypted env file at specific path with specific config
+create_encrypted_env() {
+    local secrets_dir="$1"
+    local project="$2"
+    local env="$3"
+    local content="${4:-TEST_VAR=test_value}"
+
+    local project_dir="$secrets_dir/$project"
+    local output_file="$project_dir/${env}.env.enc"
+    mkdir -p "$project_dir"
+
+    echo "$content" | sops --config "$secrets_dir/.sops.yaml" --filename-override "$output_file" -e --input-type dotenv --output-type dotenv /dev/stdin > "$output_file"
 }
 
 # Create a plain .env file in current directory
