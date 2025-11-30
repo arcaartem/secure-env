@@ -25,6 +25,40 @@ warn() { echo -e "${YELLOW}warning:${NC} $*" >&2; }
 info() { echo -e "${BLUE}info:${NC} $*"; }
 success() { echo -e "${GREEN}success:${NC} $*"; }
 
+# Check for required dependencies
+# Usage: check_deps gpg sops git
+check_deps() {
+    local missing=()
+    for cmd in "$@"; do
+        if ! command -v "$cmd" &>/dev/null; then
+            missing+=("$cmd")
+        fi
+    done
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        err "Required dependencies not found: ${missing[*]}"
+        echo "" >&2
+        echo "Install instructions:" >&2
+        for cmd in "${missing[@]}"; do
+            case "$cmd" in
+                gpg)
+                    echo "  gpg:  brew install gnupg (macOS) or apt install gnupg (Ubuntu)" >&2
+                    ;;
+                sops)
+                    echo "  sops: brew install sops (macOS) or see https://github.com/getsops/sops" >&2
+                    ;;
+                git)
+                    echo "  git:  brew install git (macOS) or apt install git (Ubuntu)" >&2
+                    ;;
+                *)
+                    echo "  $cmd: please install $cmd" >&2
+                    ;;
+            esac
+        done
+        exit 1
+    fi
+}
+
 # Get project name (flag > env var > current directory)
 get_project_name() {
     if [[ -n "$PROJECT_OVERRIDE" ]]; then
@@ -88,6 +122,8 @@ get_enc_path() {
 # ============================================================================
 
 cmd_init() {
+    check_deps gpg sops git
+
     if [[ -f "$CONFIG_FILE" ]]; then
         warn "Already initialized. Config: $CONFIG_FILE"
         read -rp "Reinitialize? [y/N] " confirm
@@ -150,6 +186,7 @@ EOF
 }
 
 cmd_use() {
+    check_deps gpg sops
     check_init
     local env="${1:-}"
 
@@ -201,6 +238,7 @@ cmd_use() {
 }
 
 cmd_edit() {
+    check_deps gpg sops
     check_init
     local env="${1:-}"
 
@@ -237,6 +275,7 @@ cmd_edit() {
 }
 
 cmd_save() {
+    check_deps gpg sops
     check_init
 
     if [[ ! -f ".env" ]]; then
@@ -300,6 +339,7 @@ cmd_list() {
 }
 
 cmd_diff() {
+    check_deps gpg sops
     check_init
     local env="${1:-}"
 
@@ -397,6 +437,7 @@ cmd_delete() {
 }
 
 cmd_export() {
+    check_deps gpg sops
     check_init
     local output_dir="."
     local force=false
@@ -485,6 +526,7 @@ cmd_export() {
 }
 
 cmd_import() {
+    check_deps gpg sops
     check_init
     local force=false
     local keep=false
