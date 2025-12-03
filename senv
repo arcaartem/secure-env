@@ -301,18 +301,35 @@ cmd_use() {
         fi
     fi
 
-    # Decrypt to .env
+    # Decrypt to .env (using temp file for safety)
     local secrets_path
     secrets_path=$(get_secrets_path)
     local sops_config="$secrets_path/.sops.yaml"
+    local temp_file
+    temp_file=$(mktemp)
+    trap "rm -f '$temp_file'" EXIT
+
     info "Decrypting $env → .env"
+
+    # First, try decryption to temp file to verify it works
+    if ! sops --config "$sops_config" --input-type dotenv --output-type dotenv -d "$enc_path" > "$temp_file" 2>&1; then
+        err "Decryption failed:"
+        cat "$temp_file" >&2
+        rm -f "$temp_file"
+        exit 1
+    fi
+
+    # Decryption succeeded, now write the final .env file atomically
     {
         echo "# senv: $env"
         echo "# Decrypted from: $enc_path"
         echo "# Do not commit this file!"
         echo ""
-        sops --config "$sops_config" --input-type dotenv --output-type dotenv -d "$enc_path"
+        cat "$temp_file"
     } > .env
+
+    rm -f "$temp_file"
+    trap - EXIT
 
     success "Activated '$env' environment for '$project'"
 
@@ -391,10 +408,30 @@ cmd_save() {
     fi
 
     # Strip senv header comments and encrypt using .sops.yaml rules
-    # Use --filename-override so path_regex in .sops.yaml matches the output file
+    # Use temp file for safety - only overwrite enc_path if encryption succeeds
+    local temp_file
+    temp_file=$(mktemp)
+    trap "rm -f '$temp_file'" EXIT
+
     info "Encrypting .env → $env"
-    grep -v "^# senv:" .env | grep -v "^# Decrypted from:" | grep -v "^# Do not commit" | \
-        sops --config "$sops_config" --filename-override "$enc_path" -e --input-type dotenv --output-type dotenv /dev/stdin > "$enc_path"
+
+    # Try encryption to temp file first
+    if ! grep -v "^# senv:" .env | grep -v "^# Decrypted from:" | grep -v "^# Do not commit" | \
+        sops --config "$sops_config" --filename-override "$enc_path" -e --input-type dotenv --output-type dotenv /dev/stdin > "$temp_file" 2>&1; then
+        err "Encryption failed:"
+        cat "$temp_file" >&2
+        rm -f "$temp_file"
+        # Restore from backup if it exists
+        if [[ -f "${enc_path}.backup" ]]; then
+            info "Restoring from backup"
+            mv "${enc_path}.backup" "$enc_path"
+        fi
+        exit 1
+    fi
+
+    # Encryption succeeded, move temp file to final location
+    mv "$temp_file" "$enc_path"
+    trap - EXIT
 
     success "Saved to $enc_path"
     info "Don't forget to commit changes in $secrets_path"
