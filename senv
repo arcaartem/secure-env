@@ -434,7 +434,10 @@ cmd_save() {
     trap - EXIT
 
     success "Saved to $enc_path"
-    info "Don't forget to commit changes in $secrets_path"
+
+    # Auto-commit
+    git -C "$secrets_path" add "$project/${env}.env.enc"
+    git -C "$secrets_path" commit -m "Update $project/$env environment" 2>/dev/null || true
 }
 
 cmd_list() {

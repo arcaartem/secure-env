@@ -8,6 +8,7 @@ A CLI tool for managing encrypted `.env` files using [SOPS](https://github.com/g
 - Per-project, per-environment secrets (local, staging, production)
 - Safe atomic operations - no data loss on encryption/decryption failures
 - Import/export for easy migration
+- Auto-commits changes to secrets repo on save
 - Works with [direnv](https://direnv.net/) for automatic loading
 
 ## Installation
@@ -46,7 +47,7 @@ senv save              # Encrypts .env
 | `senv init` | Initialize senv (interactive backend selection) |
 | `senv use <env>` | Decrypt environment to `.env` |
 | `senv edit <env>` | Edit encrypted environment in `$EDITOR` |
-| `senv save` | Encrypt `.env` back to secrets repo |
+| `senv save` | Encrypt `.env` back to secrets repo (auto-commits) |
 | `senv list` | List available environments |
 | `senv diff [env]` | Show diff between local and stored |
 | `senv status` | Show current project status |
