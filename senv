@@ -220,14 +220,33 @@ setup_pgp_backend() {
     local secrets_path="$1"
     check_deps gpg
 
-    # List available GPG keys
+    # List available GPG keys with long format IDs
     echo "Available GPG keys:"
-    gpg --list-secret-keys --keyid-format LONG 2>/dev/null | grep -E "^sec|^uid" || {
+    echo ""
+    local key_output
+    key_output=$(gpg --list-secret-keys --keyid-format LONG 2>/dev/null)
+    if [[ -z "$key_output" ]]; then
         err "No GPG keys found. Create one with: gpg --full-generate-key"
         exit 1
-    }
+    fi
+
+    # Show keys with their long IDs extracted for easy copying
+    echo "$key_output" | awk '
+        /^sec/ {
+            # Extract the key ID from lines like "sec   rsa4096/ABCD1234EFGH5678 2024-01-01"
+            split($2, parts, "/")
+            key_id = parts[2]
+            key_type = parts[1]
+            print "  " key_id " (" key_type ")"
+        }
+        /^uid/ {
+            # Print the uid line indented
+            sub(/^uid *\[.*\] */, "    ")
+            print "    " $0
+        }
+    '
     echo ""
-    read -rp "Enter GPG key ID (long format): " gpg_key
+    read -rp "Enter GPG key ID (long format, e.g., ABCD1234EFGH5678): " gpg_key
 
     if [[ -z "$gpg_key" ]]; then
         err "GPG key ID required"
