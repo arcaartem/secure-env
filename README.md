@@ -1,206 +1,103 @@
 # senv - Secure Environment File Manager
 
-A CLI tool that transparently manages encrypted `.env` files using SOPS and GPG. Projects remain unaware of the secrets repository - `senv` handles encryption/decryption and writes plain `.env` files that direnv and Python can consume.
+A CLI tool for managing encrypted `.env` files using [SOPS](https://github.com/getsops/sops). Supports both **age** and **GPG** encryption backends.
 
-## Prerequisites
+## Features
 
-- [SOPS](https://github.com/getsops/sops) - for encryption
-- [GPG](https://gnupg.org/) - for key management
-- [direnv](https://direnv.net/) - optional, for auto-loading env vars
-
-```bash
-# macOS
-brew install sops gnupg direnv
-
-# Create a GPG key if you don't have one
-gpg --full-generate-key
-```
+- Encrypt/decrypt `.env` files with SOPS (age or GPG)
+- Per-project, per-environment secrets (local, staging, production)
+- Safe atomic operations - no data loss on encryption/decryption failures
+- Import/export for easy migration
+- Works with [direnv](https://direnv.net/) for automatic loading
 
 ## Installation
 
 ```bash
-git clone <this-repo> ~/source/secure-env
-cd ~/source/secure-env
+# Install dependencies (macOS)
+brew install sops age  # or: brew install sops gnupg
+
+# Install senv
+git clone https://github.com/yourusername/secure-env.git
+cd secure-env
 ./install.sh
 ```
-
-This creates a symlink: `~/.local/bin/senv` → `<repo>/senv`
 
 ## Quick Start
 
 ```bash
-# 1. Initialize senv (one-time setup)
+# Initialize (choose age or GPG backend)
 senv init
 
-# 2. Create an environment for your project
+# Create an environment for your project
 cd ~/projects/myapp
-senv edit local          # Opens $EDITOR to create local.env.enc
+senv edit local        # Opens $EDITOR
 
-# 3. Activate the environment
-senv use local           # Decrypts → .env
+# Activate the environment
+senv use local         # Decrypts to .env
 
-# 4. Set up direnv (optional, for auto-loading)
-echo "dotenv" > .envrc
-direnv allow
-
-# 5. After modifying .env, save it back
-senv save                # Encrypts .env → local.env.enc
+# After modifying .env, save it back
+senv save              # Encrypts .env
 ```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `senv init` | Initialize senv (create config and secrets repo) |
-| `senv use <env>` | Decrypt environment and write `.env` |
-| `senv edit <env>` | Edit encrypted environment file in `$EDITOR` |
-| `senv save` | Encrypt current `.env` back to secrets repo |
-| `senv list` | List available environments for current project |
-| `senv diff [env]` | Show diff between local `.env` and stored version |
+| `senv init` | Initialize senv (interactive backend selection) |
+| `senv use <env>` | Decrypt environment to `.env` |
+| `senv edit <env>` | Edit encrypted environment in `$EDITOR` |
+| `senv save` | Encrypt `.env` back to secrets repo |
+| `senv list` | List available environments |
+| `senv diff [env]` | Show diff between local and stored |
 | `senv status` | Show current project status |
-| `senv help` | Show help message |
+| `senv export` | Export all environments as `.env.<name>` files |
+| `senv import` | Import `.env.<name>` files into secrets repo |
+| `senv delete <env>` | Delete an environment |
+| `senv repo` | Print secrets repo path |
+
+## Options
+
+```bash
+senv -p <project>       # Override project name (default: current directory)
+senv -s <path>          # Override secrets path (default: ~/.local/share/senv)
+```
+
+Environment variables: `SENV_PROJECT`, `SENV_SECRETS_PATH`
 
 ## How It Works
 
-### Architecture
-
 ```
-~/.config/senv/
-├── config.yaml          # Global configuration
-└── secrets/             # Git repo for encrypted files
-    ├── .sops.yaml       # SOPS configuration
-    ├── myapp/
-    │   ├── local.env.enc
-    │   ├── staging.env.enc
-    │   └── production.env.enc
-    └── another-project/
-        └── local.env.enc
+~/.local/share/senv/           # Secrets repository (git-tracked)
+├── .sops.yaml                 # SOPS encryption config
+├── myapp/
+│   ├── local.env.enc
+│   └── production.env.enc
+└── another-project/
+    └── local.env.enc
 
 ~/projects/myapp/
-├── .env                 # ← Written by `senv use local` (gitignored)
-├── .envrc               # ← direnv: `dotenv`
-└── ...
+├── .env                       # Written by `senv use` (gitignored)
+└── .envrc                     # Optional: direnv with `dotenv`
 ```
 
-### Project Identification
+Project name defaults to current directory. Encrypted files are stored in the secrets repo, organized by project.
 
-`senv` uses the current directory name as the project identifier. When you run `senv use staging` in `~/projects/myapp/`, it looks for:
+## Syncing Across Machines
 
-```
-~/.config/senv/secrets/myapp/staging.env.enc
-```
-
-### Encryption
-
-Files are encrypted using SOPS with your GPG key. Only `.env.enc` files are stored in the secrets repository - plain `.env` files should always be gitignored.
-
-## Workflow Examples
-
-### Daily Development
+The secrets repo is git-initialized. Push to a private remote for backup/sync:
 
 ```bash
-cd ~/projects/myapp
-
-# Start of day - activate environment
-senv use local
-
-# Work on your project...
-# Environment variables are loaded via direnv
-
-# Made changes to .env? Save them
-senv save
-
-# Switch to staging to test something
-senv use staging
-```
-
-### Adding a New Project
-
-```bash
-cd ~/projects/newproject
-
-# Create environments
-senv edit local
-senv edit staging
-senv edit production
-
-# Activate local
-senv use local
-
-# Set up direnv
-echo "dotenv" > .envrc
-direnv allow
-```
-
-### Checking for Changes
-
-```bash
-# See what's different from stored version
-senv diff
-
-# See status
-senv status
-```
-
-### Syncing Secrets Across Machines
-
-The secrets repository at `~/.config/senv/secrets/` is a git repo. You can push it to a private remote for backup and sync:
-
-```bash
-cd ~/.config/senv/secrets
+cd "$(senv repo)"
 git remote add origin git@github.com:you/secrets.git
 git push -u origin main
-
-# On another machine after senv init:
-cd ~/.config/senv/secrets
-git remote add origin git@github.com:you/secrets.git
-git pull origin main
 ```
 
-## Security Notes
+## Security
 
-1. **Never commit `.env` files** - Always add `.env` to your project's `.gitignore`
-2. **Only commit `.env.enc` files** - These are encrypted and safe to store
-3. **Protect your GPG key** - The security depends on your GPG key passphrase
-4. **Private secrets repo** - If syncing to a remote, use a private repository
-
-## Configuration
-
-Config file: `~/.config/senv/config.yaml`
-
-```yaml
-secrets_path: ~/.config/senv/secrets
-gpg_key: YOUR_GPG_KEY_ID
-```
-
-## Troubleshooting
-
-### "GPG decryption failed"
-
-Make sure your GPG agent is running and has your key unlocked:
-
-```bash
-gpg --list-secret-keys
-echo "test" | gpg -e -r YOUR_KEY_ID | gpg -d
-```
-
-### "Environment not found"
-
-Check that the project name matches your directory:
-
-```bash
-senv status  # Shows project name and available environments
-```
-
-### direnv not loading
-
-```bash
-# Check .envrc exists
-cat .envrc  # Should contain: dotenv
-
-# Allow direnv
-direnv allow
-```
+- Never commit `.env` files - add to `.gitignore`
+- Only `.env.enc` files are stored (encrypted)
+- Protect your age key or GPG passphrase
+- Use a private repository if syncing secrets
 
 ## License
 
