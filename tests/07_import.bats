@@ -333,6 +333,7 @@ DB_PORT=5432"
 
 @test "import fails on unknown option" {
     run_senv import --unknown
-    [ "$status" -eq 1 ]
-    assert_output_contains "Unknown option"
+    [ "$status" -ne 0 ]
+    # clap says "unexpected argument"
+    assert_output_contains "unexpected" || assert_output_contains "Unknown"
 }

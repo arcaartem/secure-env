@@ -218,6 +218,7 @@ DB_PORT=5432"
 
 @test "export fails on unknown option" {
     run_senv export --unknown
-    [ "$status" -eq 1 ]
-    assert_output_contains "Unknown option"
+    [ "$status" -ne 0 ]
+    # clap says "unexpected argument"
+    assert_output_contains "unexpected" || assert_output_contains "Unknown"
 }

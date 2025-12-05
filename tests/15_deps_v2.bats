@@ -180,15 +180,15 @@ $TEST_GPG_KEY" init
 @test "help works without sops" {
     hide_command sops
 
-    run_senv help
+    run_senv --help
     [ "$status" -eq 0 ]
-    assert_output_contains "USAGE:"
+    assert_output_contains "Usage:"
 }
 
 @test "version works without sops" {
     hide_command sops
 
-    run_senv version
+    run_senv --version
     [ "$status" -eq 0 ]
 }
 

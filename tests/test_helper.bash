@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Test helper functions for senv tests
 
-# Path to the senv script
-SENV_BIN="${BATS_TEST_DIRNAME}/../senv"
+# Path to the senv binary (Rust)
+SENV_BIN="${BATS_TEST_DIRNAME}/../target/release/senv"
 
 # Setup a clean test environment
 setup_test_env() {

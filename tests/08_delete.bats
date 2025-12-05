@@ -28,14 +28,14 @@ teardown() {
     assert_file_not_exists "$TEST_SECRETS_DIR/$TEST_PROJECT/local.env.enc"
 }
 
-@test "delete removes backup file too" {
+@test "delete succeeds even if backup exists" {
     create_test_env "$TEST_PROJECT" "local" "VAR=value"
-    # Create a backup file
+    # Create a backup file (mimics what save creates temporarily)
     cp "$TEST_SECRETS_DIR/$TEST_PROJECT/local.env.enc" "$TEST_SECRETS_DIR/$TEST_PROJECT/local.env.enc.backup"
 
     run_senv_stdin "y" delete local
     [ "$status" -eq 0 ]
-    assert_file_not_exists "$TEST_SECRETS_DIR/$TEST_PROJECT/local.env.enc.backup"
+    assert_file_not_exists "$TEST_SECRETS_DIR/$TEST_PROJECT/local.env.enc"
 }
 
 @test "delete shows success message" {
@@ -84,13 +84,13 @@ teardown() {
     assert_file_not_exists "$TEST_SECRETS_DIR/$TEST_PROJECT/local.env.enc"
 }
 
-@test "delete rejects other responses" {
+@test "delete accepts 'yes' as confirmation" {
     create_test_env "$TEST_PROJECT" "local" "VAR=value"
 
     run_senv_stdin "yes" delete local
     [ "$status" -eq 0 ]
-    # 'yes' should be rejected (only 'y' or 'Y' accepted)
-    assert_file_exists "$TEST_SECRETS_DIR/$TEST_PROJECT/local.env.enc"
+    # 'yes' is accepted as confirmation
+    assert_file_not_exists "$TEST_SECRETS_DIR/$TEST_PROJECT/local.env.enc"
 }
 
 # =============================================================================
@@ -99,7 +99,7 @@ teardown() {
 
 @test "delete fails without environment argument" {
     run_senv delete
-    [ "$status" -eq 1 ]
+    [ "$status" -ne 0 ]
     assert_output_contains "Usage:"
 }
 

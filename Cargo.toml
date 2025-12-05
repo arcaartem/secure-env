@@ -1,0 +1,27 @@
+[package]
+name = "senv"
+version = "2.0.0"
+edition = "2021"
+description = "Secure Environment File Manager - Manages encrypted .env files using SOPS"
+license = "MIT"
+repository = "https://github.com/yourusername/secure-env"
+keywords = ["env", "secrets", "sops", "encryption", "dotenv"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+colored = "2"
+anyhow = "1"
+thiserror = "1"
+tempfile = "3"
+dirs = "5"
+which = "6"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

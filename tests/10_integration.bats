@@ -134,8 +134,8 @@ ANOTHER_VAR=value"
 # =============================================================================
 
 @test "use fails gracefully when not initialized" {
-    # Remove config to simulate uninitialized state
-    rm -f "$TEST_CONFIG_DIR/config.yaml"
+    # Remove .sops.yaml to simulate uninitialized state
+    rm -f "$TEST_SECRETS_DIR/.sops.yaml"
 
     run_senv use local
     [ "$status" -eq 1 ]
@@ -144,7 +144,7 @@ ANOTHER_VAR=value"
 }
 
 @test "list fails gracefully when not initialized" {
-    rm -f "$TEST_CONFIG_DIR/config.yaml"
+    rm -f "$TEST_SECRETS_DIR/.sops.yaml"
 
     run_senv list
     [ "$status" -eq 1 ]
@@ -152,7 +152,7 @@ ANOTHER_VAR=value"
 }
 
 @test "export fails gracefully when not initialized" {
-    rm -f "$TEST_CONFIG_DIR/config.yaml"
+    rm -f "$TEST_SECRETS_DIR/.sops.yaml"
 
     run_senv export
     [ "$status" -eq 1 ]
@@ -160,7 +160,7 @@ ANOTHER_VAR=value"
 }
 
 @test "import fails gracefully when not initialized" {
-    rm -f "$TEST_CONFIG_DIR/config.yaml"
+    rm -f "$TEST_SECRETS_DIR/.sops.yaml"
     create_plain_env "local" "VAR=value"
 
     run_senv import
@@ -290,17 +290,20 @@ ANOTHER_VAR=value"
     assert_file_contains ".env" "SECOND=addition"
 }
 
-@test "backup file can restore after failed save" {
+@test "save creates backup and removes on success" {
     create_test_env "$TEST_PROJECT" "local" "ORIGINAL=value"
     run_senv use local
 
-    # Modify and save to create backup
+    # Modify and save
     echo "MODIFIED=value" >> .env
     run_senv save
     [ "$status" -eq 0 ]
 
-    # Backup should exist with original content
-    assert_file_exists "$TEST_SECRETS_DIR/$TEST_PROJECT/local.env.enc.backup"
+    # Backup should be removed after successful save
+    assert_file_not_exists "$TEST_SECRETS_DIR/$TEST_PROJECT/local.env.enc.backup"
+
+    # But the encrypted file should be updated
+    assert_file_exists "$TEST_SECRETS_DIR/$TEST_PROJECT/local.env.enc"
 }
 
 # =============================================================================

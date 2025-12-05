@@ -55,7 +55,7 @@ teardown() {
 
 @test "use fails without environment argument" {
     run_senv use
-    [ "$status" -eq 1 ]
+    [ "$status" -ne 0 ]
     assert_output_contains "Usage:"
 }
 
@@ -109,7 +109,7 @@ teardown() {
 
 @test "edit fails without environment argument" {
     run_senv edit
-    [ "$status" -eq 1 ]
+    [ "$status" -ne 0 ]
     assert_output_contains "Usage:"
 }
 
@@ -169,7 +169,7 @@ teardown() {
     assert_output_contains "not created by senv"
 }
 
-@test "save creates backup of existing encrypted file" {
+@test "save updates encrypted file successfully" {
     create_test_env "$TEST_PROJECT" "local" "ORIGINAL=value"
     run_senv use local
     [ "$status" -eq 0 ]
@@ -178,7 +178,8 @@ teardown() {
     run_senv save
     [ "$status" -eq 0 ]
 
-    assert_file_exists "$TEST_SECRETS_DIR/$TEST_PROJECT/local.env.enc.backup"
+    # Encrypted file should exist after save
+    assert_file_exists "$TEST_SECRETS_DIR/$TEST_PROJECT/local.env.enc"
 }
 
 @test "save strips senv header comments" {
@@ -200,10 +201,10 @@ teardown() {
     [ "$header_count" -eq 1 ]
 }
 
-@test "save shows reminder to commit" {
+@test "save shows success message" {
     create_test_env "$TEST_PROJECT" "local" "VAR=value"
     run_senv use local
     run_senv save
     [ "$status" -eq 0 ]
-    assert_output_contains "commit"
+    assert_output_contains "Saved"
 }

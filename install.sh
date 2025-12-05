@@ -1,21 +1,47 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# senv installer - Creates symlink to ~/.local/bin
+# senv installer - Builds and installs the Rust binary
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${HOME}/.local/bin"
-SENV_PATH="$SCRIPT_DIR/senv"
 
 echo "senv installer"
 echo "=============="
 echo
 
-# Check senv exists
-if [[ ! -f "$SENV_PATH" ]]; then
-    echo "Error: senv script not found at $SENV_PATH"
+# Check for Cargo
+if ! command -v cargo &>/dev/null; then
+    echo "Error: cargo not found. Please install Rust first:"
+    echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
     exit 1
 fi
+
+# Check for required dependencies
+missing_deps=()
+command -v sops &>/dev/null || missing_deps+=("sops")
+if ! command -v age &>/dev/null && ! command -v gpg &>/dev/null; then
+    missing_deps+=("age (or gpg)")
+fi
+
+if [[ ${#missing_deps[@]} -gt 0 ]]; then
+    echo "Warning: Missing dependencies: ${missing_deps[*]}"
+    echo "Install with: brew install sops age"
+    echo
+fi
+
+# Build release binary
+echo "Building senv..."
+cd "$SCRIPT_DIR"
+cargo build --release --quiet
+
+if [[ ! -f "$SCRIPT_DIR/target/release/senv" ]]; then
+    echo "Error: Build failed - binary not found"
+    exit 1
+fi
+
+echo "Build complete."
+echo
 
 # Create install directory if needed
 if [[ ! -d "$INSTALL_DIR" ]]; then
@@ -24,25 +50,15 @@ if [[ ! -d "$INSTALL_DIR" ]]; then
 fi
 
 # Check if already installed
-if [[ -L "$INSTALL_DIR/senv" ]]; then
-    current=$(readlink "$INSTALL_DIR/senv")
-    if [[ "$current" == "$SENV_PATH" ]]; then
-        echo "Already installed: $INSTALL_DIR/senv → $SENV_PATH"
-        exit 0
-    else
-        echo "Updating symlink (was: $current)"
-        rm "$INSTALL_DIR/senv"
-    fi
-elif [[ -f "$INSTALL_DIR/senv" ]]; then
-    echo "Warning: $INSTALL_DIR/senv exists and is not a symlink"
-    read -rp "Replace it? [y/N] " confirm
-    [[ "$confirm" != [yY] ]] && exit 1
+if [[ -f "$INSTALL_DIR/senv" ]]; then
+    echo "Replacing existing installation..."
     rm "$INSTALL_DIR/senv"
 fi
 
-# Create symlink
-ln -s "$SENV_PATH" "$INSTALL_DIR/senv"
-echo "Installed: $INSTALL_DIR/senv → $SENV_PATH"
+# Copy binary
+cp "$SCRIPT_DIR/target/release/senv" "$INSTALL_DIR/senv"
+chmod +x "$INSTALL_DIR/senv"
+echo "Installed: $INSTALL_DIR/senv"
 
 # Check PATH
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then

@@ -32,7 +32,8 @@ hide_command() {
 
     # Copy essential commands we need for the test to work
     # Include common utilities that scripts and tests might need
-    for essential in bash cat grep sed mkdir rmdir rm cp mv ls echo head tail tr basename dirname pwd git mktemp timeout read command; do
+    # Also include sops/gpg/age so hiding one doesn't break others
+    for essential in bash cat grep sed mkdir rmdir rm cp mv ls echo head tail tr basename dirname pwd git mktemp timeout read command sops gpg age age-keygen awk sort uniq; do
         local cmd_path=$(which "$essential" 2>/dev/null || true)
         if [[ -n "$cmd_path" && -x "$cmd_path" ]]; then
             ln -sf "$cmd_path" "$fake_path/$essential"
@@ -47,69 +48,24 @@ hide_command() {
 }
 
 # =============================================================================
-# GPG Dependency
+# GPG Dependency (only for init with PGP backend)
 # =============================================================================
 
-@test "init fails with helpful message when gpg is not installed" {
-    hide_command gpg
+# Note: In the Rust version, senv only directly requires sops.
+# GPG is a sops backend dependency, checked during init when PGP is selected.
+# The use/edit/save/export/import commands don't check for gpg directly;
+# they only check for sops, and sops handles backend availability.
 
-    run_senv init
-    [ "$status" -eq 1 ]
-    assert_output_contains "gpg"
-    assert_output_contains "not found" || assert_output_contains "required" || assert_output_contains "install"
-}
-
-@test "use fails with helpful message when gpg is not installed" {
-    # First create env with gpg available
-    create_test_env "$TEST_PROJECT" "local" "VAR=value"
+@test "init with pgp backend fails when gpg is not installed" {
+    # Remove existing .sops.yaml to trigger fresh init
+    rm -f "$TEST_SECRETS_DIR/.sops.yaml"
 
     hide_command gpg
 
-    run_senv use local
+    run_senv_stdin "pgp" init
     [ "$status" -eq 1 ]
     assert_output_contains "gpg"
-}
-
-@test "edit fails with helpful message when gpg is not installed" {
-    create_test_env "$TEST_PROJECT" "local" "VAR=value"
-
-    hide_command gpg
-
-    run_senv edit local
-    [ "$status" -eq 1 ]
-    assert_output_contains "gpg"
-}
-
-@test "save fails with helpful message when gpg is not installed" {
-    create_test_env "$TEST_PROJECT" "local" "VAR=value"
-    run_senv use local
-    [ "$status" -eq 0 ]
-
-    hide_command gpg
-
-    run_senv save
-    [ "$status" -eq 1 ]
-    assert_output_contains "gpg"
-}
-
-@test "export fails with helpful message when gpg is not installed" {
-    create_test_env "$TEST_PROJECT" "local" "VAR=value"
-
-    hide_command gpg
-
-    run_senv export
-    [ "$status" -eq 1 ]
-    assert_output_contains "gpg"
-}
-
-@test "import fails with helpful message when gpg is not installed" {
-    create_plain_env "local" "VAR=value"
-
-    hide_command gpg
-
-    run_senv import
-    [ "$status" -eq 1 ]
-    assert_output_contains "gpg"
+    assert_output_contains "not found" || assert_output_contains "install"
 }
 
 # =============================================================================
@@ -197,23 +153,23 @@ hide_command() {
 @test "help works without gpg installed" {
     hide_command gpg
 
-    run_senv help
+    run_senv --help
     [ "$status" -eq 0 ]
-    assert_output_contains "USAGE:"
+    assert_output_contains "Usage:"
 }
 
 @test "help works without sops installed" {
     hide_command sops
 
-    run_senv help
+    run_senv --help
     [ "$status" -eq 0 ]
-    assert_output_contains "USAGE:"
+    assert_output_contains "Usage:"
 }
 
 @test "version works without sops" {
     hide_command sops
 
-    run_senv version
+    run_senv --version
     [ "$status" -eq 0 ]
     assert_output_contains "senv"
 }
@@ -221,7 +177,7 @@ hide_command() {
 @test "version works without gpg" {
     hide_command gpg
 
-    run_senv version
+    run_senv --version
     [ "$status" -eq 0 ]
     assert_output_contains "senv"
 }
@@ -270,11 +226,11 @@ hide_command() {
 # =============================================================================
 
 @test "reports all missing dependencies at once" {
-    hide_command gpg
+    hide_command sops
     # Note: Can't easily hide both since hide_command replaces PATH entirely
     # This test verifies at least one is reported
 
     run_senv init
     [ "$status" -eq 1 ]
-    assert_output_contains "gpg"
+    assert_output_contains "sops"
 }

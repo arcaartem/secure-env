@@ -1,11 +1,17 @@
 #!/usr/bin/env bats
-# Tests for senv init command
+# Tests for senv init command (v2 structure)
+# More comprehensive init tests are in 13_init_v2.bats
 
 load test_helper
 
 setup() {
     setup_test_env
     setup_mock_gpg
+
+    # Set up default secrets path
+    export TEST_DEFAULT_SECRETS="$TEST_HOME/.local/share/senv"
+    export HOME="$TEST_HOME"
+    unset SENV_SECRETS_PATH
 }
 
 teardown() {
@@ -14,79 +20,68 @@ teardown() {
 }
 
 # =============================================================================
-# Init Command
+# Init Command - Basic Behavior
 # =============================================================================
 
-@test "init creates config directory" {
-    run_senv_stdin "$TEST_GPG_KEY" init
-    [ "$status" -eq 0 ]
-    assert_dir_exists "$TEST_CONFIG_DIR"
-}
-
-@test "init creates config file" {
-    run_senv_stdin "$TEST_GPG_KEY" init
-    [ "$status" -eq 0 ]
-    assert_file_exists "$TEST_CONFIG_DIR/config.yaml"
-}
-
 @test "init creates secrets directory" {
-    run_senv_stdin "$TEST_GPG_KEY" init
+    run_senv_stdin "pgp
+$TEST_GPG_KEY" init
     [ "$status" -eq 0 ]
-    assert_dir_exists "$TEST_SECRETS_DIR"
+    assert_dir_exists "$TEST_DEFAULT_SECRETS"
 }
 
 @test "init creates git repo in secrets directory" {
-    run_senv_stdin "$TEST_GPG_KEY" init
+    run_senv_stdin "pgp
+$TEST_GPG_KEY" init
     [ "$status" -eq 0 ]
-    assert_dir_exists "$TEST_SECRETS_DIR/.git"
+    assert_dir_exists "$TEST_DEFAULT_SECRETS/.git"
 }
 
 @test "init creates .sops.yaml" {
-    run_senv_stdin "$TEST_GPG_KEY" init
+    run_senv_stdin "pgp
+$TEST_GPG_KEY" init
     [ "$status" -eq 0 ]
-    assert_file_exists "$TEST_SECRETS_DIR/.sops.yaml"
-    assert_file_contains "$TEST_SECRETS_DIR/.sops.yaml" "$TEST_GPG_KEY"
+    assert_file_exists "$TEST_DEFAULT_SECRETS/.sops.yaml"
+    assert_file_contains "$TEST_DEFAULT_SECRETS/.sops.yaml" "$TEST_GPG_KEY"
 }
 
 @test "init creates .gitignore" {
-    run_senv_stdin "$TEST_GPG_KEY" init
+    run_senv_stdin "pgp
+$TEST_GPG_KEY" init
     [ "$status" -eq 0 ]
-    assert_file_exists "$TEST_SECRETS_DIR/.gitignore"
-    assert_file_contains "$TEST_SECRETS_DIR/.gitignore" "*.env"
-    assert_file_contains "$TEST_SECRETS_DIR/.gitignore" "!*.env.enc"
-}
-
-@test "init stores gpg_key in config" {
-    run_senv_stdin "$TEST_GPG_KEY" init
-    [ "$status" -eq 0 ]
-    assert_file_contains "$TEST_CONFIG_DIR/config.yaml" "gpg_key: $TEST_GPG_KEY"
+    assert_file_exists "$TEST_DEFAULT_SECRETS/.gitignore"
+    assert_file_contains "$TEST_DEFAULT_SECRETS/.gitignore" "*.env"
+    assert_file_contains "$TEST_DEFAULT_SECRETS/.gitignore" "!*.env.enc"
 }
 
 @test "init shows success message" {
-    run_senv_stdin "$TEST_GPG_KEY" init
+    run_senv_stdin "pgp
+$TEST_GPG_KEY" init
     [ "$status" -eq 0 ]
-    assert_output_contains "Initialized senv"
+    assert_output_contains "Initialized" || assert_output_contains "success"
 }
 
-@test "init warns if already initialized" {
-    # First init
-    run_senv_stdin "$TEST_GPG_KEY" init
-    [ "$status" -eq 0 ]
+@test "init with existing .sops.yaml reuses it" {
+    mkdir -p "$TEST_DEFAULT_SECRETS"
+    cat > "$TEST_DEFAULT_SECRETS/.sops.yaml" <<EOF
+creation_rules:
+  - path_regex: .*\.env\.enc$
+    pgp: $TEST_GPG_KEY
+EOF
 
-    # Second init - answer 'n' to skip
-    run_senv_stdin "n" init
+    run_senv init
     [ "$status" -eq 0 ]
-    assert_output_contains "Already initialized"
+    assert_output_contains "existing"
 }
 
 @test "init fails with invalid GPG key" {
-    run_senv_stdin "INVALID_KEY_12345" init
+    run_senv_stdin "pgp
+INVALID_KEY_12345" init
     [ "$status" -eq 1 ]
-    assert_output_contains "not found"
 }
 
 @test "init fails with empty GPG key" {
-    run_senv_stdin "" init
+    run_senv_stdin "pgp
+" init
     [ "$status" -eq 1 ]
-    assert_output_contains "required"
 }

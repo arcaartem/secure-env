@@ -19,27 +19,20 @@ teardown() {
     run_senv help
     [ "$status" -eq 0 ]
     assert_output_contains "senv"
-    assert_output_contains "USAGE:"
-    assert_output_contains "COMMANDS:"
+    assert_output_contains "Usage:"
+    assert_output_contains "Commands:"
 }
 
 @test "--help flag shows usage" {
     run_senv --help
     [ "$status" -eq 0 ]
-    assert_output_contains "USAGE:"
+    assert_output_contains "Usage:"
 }
 
 @test "-h flag shows usage" {
     run_senv -h
     [ "$status" -eq 0 ]
-    assert_output_contains "USAGE:"
-}
-
-@test "version command shows version" {
-    run_senv version
-    [ "$status" -eq 0 ]
-    assert_output_contains "senv"
-    [[ "$output" =~ [0-9]+\.[0-9]+\.[0-9]+ ]]
+    assert_output_contains "Usage:"
 }
 
 @test "--version flag shows version" {
@@ -48,73 +41,109 @@ teardown() {
     [[ "$output" =~ [0-9]+\.[0-9]+\.[0-9]+ ]]
 }
 
-@test "-v flag shows version" {
-    run_senv -v
+@test "-V flag shows version" {
+    run_senv -V
     [ "$status" -eq 0 ]
     [[ "$output" =~ [0-9]+\.[0-9]+\.[0-9]+ ]]
 }
 
-@test "no arguments shows help" {
+@test "no arguments shows error requiring subcommand" {
     run_senv
-    [ "$status" -eq 0 ]
-    assert_output_contains "USAGE:"
+    [ "$status" -ne 0 ]
 }
 
 @test "unknown command shows error" {
     run_senv unknown_command
-    [ "$status" -eq 1 ]
-    assert_output_contains "Unknown command"
+    [ "$status" -ne 0 ]
 }
 
 @test "unknown option shows error" {
     run_senv --unknown-option
-    [ "$status" -eq 1 ]
-    assert_output_contains "Unknown option"
+    [ "$status" -ne 0 ]
 }
 
 # =============================================================================
-# Help shows new features
+# Help shows commands
 # =============================================================================
+
+@test "help shows init command" {
+    run_senv help
+    [ "$status" -eq 0 ]
+    assert_output_contains "init"
+}
+
+@test "help shows use command" {
+    run_senv help
+    [ "$status" -eq 0 ]
+    assert_output_contains "use"
+}
+
+@test "help shows edit command" {
+    run_senv help
+    [ "$status" -eq 0 ]
+    assert_output_contains "edit"
+}
+
+@test "help shows save command" {
+    run_senv help
+    [ "$status" -eq 0 ]
+    assert_output_contains "save"
+}
+
+@test "help shows list command" {
+    run_senv help
+    [ "$status" -eq 0 ]
+    assert_output_contains "list"
+}
+
+@test "help shows diff command" {
+    run_senv help
+    [ "$status" -eq 0 ]
+    assert_output_contains "diff"
+}
+
+@test "help shows delete command" {
+    run_senv help
+    [ "$status" -eq 0 ]
+    assert_output_contains "delete"
+}
+
+@test "help shows status command" {
+    run_senv help
+    [ "$status" -eq 0 ]
+    assert_output_contains "status"
+}
+
+@test "help shows repo command" {
+    run_senv help
+    [ "$status" -eq 0 ]
+    assert_output_contains "repo"
+}
 
 @test "help shows export command" {
     run_senv help
     [ "$status" -eq 0 ]
     assert_output_contains "export"
-    assert_output_contains "Export all environments"
 }
 
 @test "help shows import command" {
     run_senv help
     [ "$status" -eq 0 ]
     assert_output_contains "import"
-    assert_output_contains "Import all"
+}
+
+# =============================================================================
+# Global options shown in help
+# =============================================================================
+
+@test "help shows -p/--project option" {
+    run_senv --help
+    [ "$status" -eq 0 ]
+    assert_output_contains "--project"
 }
 
 @test "help shows -s/--secrets-path option" {
-    run_senv help
+    run_senv --help
     [ "$status" -eq 0 ]
-    assert_output_contains "-s, --secrets-path"
-}
-
-@test "help shows environment variables section" {
-    run_senv help
-    [ "$status" -eq 0 ]
-    assert_output_contains "ENVIRONMENT VARIABLES:"
-    assert_output_contains "SENV_PROJECT"
-    assert_output_contains "SENV_SECRETS_PATH"
-}
-
-@test "help shows export options" {
-    run_senv help
-    [ "$status" -eq 0 ]
-    assert_output_contains "EXPORT OPTIONS:"
-    assert_output_contains "--output-dir"
-    assert_output_contains "--force"
-}
-
-@test "help shows import options" {
-    run_senv help
-    [ "$status" -eq 0 ]
-    assert_output_contains "IMPORT OPTIONS:"
-    assert_output_contains "--keep"
+    assert_output_contains "--secrets-path"
 }

@@ -152,18 +152,16 @@ teardown() {
     echo "VAR=value" > .env
 
     run_senv diff
-    [ "$status" -eq 1 ]
-    assert_output_contains "Usage:"
+    [ "$status" -ne 0 ]
 }
 
-@test "diff shows no output when files are identical" {
+@test "diff shows no differences when files are identical" {
     create_test_env "$TEST_PROJECT" "local" "VAR=value"
     run_senv use local
 
     run_senv diff local
     [ "$status" -eq 0 ]
-    # Diff should produce minimal or no output for identical content
-    # (just the header lines stripped)
+    assert_output_contains "No differences"
 }
 
 @test "diff strips header comments from comparison" {
